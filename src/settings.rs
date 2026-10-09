@@ -78,8 +78,7 @@ pub enum PlayerBarVis {
 }
 
 impl PlayerBarVis {
-    /// The mode a click on the player bar moves to: spectrum, waveform,
-    /// then off, as Winamp's visualizer cycles.
+    /// The modes in order: spectrum, waveform, then off.
     pub fn next(self) -> Self {
         match self {
             Self::Off => Self::Spectrum,

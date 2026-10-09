@@ -4548,12 +4548,13 @@ mod tests {
         app.backend.shutdown();
     }
 
-    /// A click on the player bar's empty space moves the visualizer to its
-    /// next mode, and a click on a control does not.
+    /// A right-click on the player bar's empty space offers a menu: copying
+    /// the song, and an audio visualiser submenu with every choice,
+    /// including disabled. A click on a control does neither.
     #[cfg(feature = "demo")]
     #[test]
-    fn clicking_the_player_bars_empty_space_cycles_the_visualizer() {
-        let (ctx, mut app) = accessible_app("player-bar-cycle");
+    fn right_clicking_the_player_bars_empty_space_offers_the_visualizer() {
+        let (ctx, mut app) = accessible_app("player-bar-menu");
         let draw = |app: &mut App, events: Vec<egui::Event>| {
             let mut output = ctx.run_ui(
                 egui::RawInput {
@@ -4567,59 +4568,35 @@ mod tests {
                 |ui| crate::ui::player_bar::show(app, ui),
             );
             output.textures_delta.clear();
+            output
         };
         draw(&mut app, vec![]);
-        // The margin at the bar's left edge, beside the cover.
+        // A primary click on the margin changes nothing by itself.
         let empty = egui::pos2(6.0, 796.0);
         draw(&mut app, pointer_click(empty, egui::PointerButton::Primary));
         assert!(
-            app.actions
-                .iter()
-                .any(|action| matches!(action, Action::CyclePlayerBarVis))
-        );
-
-        // The play button, in the middle of the bar, is still the play button.
-        app.actions.clear();
-        let play = egui::pos2(640.0, 800.0 - crate::theme::PLAYER_BAR_HEIGHT / 2.0 - 10.0);
-        draw(&mut app, pointer_click(play, egui::PointerButton::Primary));
-        assert!(
             !app.actions
                 .iter()
-                .any(|action| matches!(action, Action::CyclePlayerBarVis)),
+                .any(|action| matches!(action, Action::SetPlayerBarVis(_))),
             "{:?}",
             app.actions
         );
-        app.backend.shutdown();
-    }
-
-    /// The empty space's tooltip belongs to the empty space: once shown, it
-    /// closes when the pointer moves onto a control drawn over the bar.
-    #[cfg(feature = "demo")]
-    #[test]
-    fn the_visualizer_tooltip_stays_off_the_player_bar_controls() {
-        let (ctx, mut app) = accessible_app("player-bar-tooltip");
-        ctx.global_style_mut(|style| style.interaction.tooltip_delay = 0.0);
-        let mut time = 0.0;
-        let mut draw = |app: &mut App, pos: egui::Pos2| {
-            time += 1.0;
-            let mut output = ctx.run_ui(
-                egui::RawInput {
-                    screen_rect: Some(egui::Rect::from_min_size(
-                        egui::Pos2::ZERO,
-                        egui::vec2(1280.0, 800.0),
-                    )),
-                    time: Some(time),
-                    events: vec![egui::Event::PointerMoved(pos)],
-                    ..Default::default()
-                },
-                |ui| crate::ui::player_bar::show(app, ui),
-            );
-            output.textures_delta.clear();
-            fn texts(shape: &egui::epaint::Shape, found: &mut Vec<String>) {
+        app.actions.clear();
+        // A right-click opens the menu with its two entries. The looks
+        // wait behind the audio visualiser submenu until it opens.
+        draw(
+            &mut app,
+            pointer_click(empty, egui::PointerButton::Secondary),
+        );
+        fn painted(output: &egui::FullOutput) -> Vec<(String, egui::Rect)> {
+            fn walk(shape: &egui::epaint::Shape, found: &mut Vec<(String, egui::Rect)>) {
                 match shape {
-                    egui::epaint::Shape::Text(text) => found.push(text.galley.job.text.clone()),
+                    egui::epaint::Shape::Text(text) => found.push((
+                        text.galley.job.text.clone(),
+                        text.galley.rect.translate(text.pos.to_vec2()),
+                    )),
                     egui::epaint::Shape::Vec(shapes) => {
-                        shapes.iter().for_each(|shape| texts(shape, found));
+                        shapes.iter().for_each(|shape| walk(shape, found))
                     }
                     _ => {}
                 }
@@ -4628,27 +4605,101 @@ mod tests {
             output
                 .shapes
                 .iter()
-                .for_each(|clipped| texts(&clipped.shape, &mut found));
+                .for_each(|clipped| walk(&clipped.shape, &mut found));
             found
+        }
+        let shown = painted(&draw(&mut app, vec![]));
+        // The playing song's options come first, in menu order, with the
+        // visualiser behind its own submenu entry. The remote speaker
+        // plays the second demo playlist.
+        let entries = [
+            "Add to queue",
+            "Add to playlist",
+            "Go to Late night focus",
+            "Go to song radio",
+            "Go to album",
+            "Copy link to song",
+            "Audio visualiser",
+        ];
+        let top = |label: &str| {
+            shown
+                .iter()
+                .find(|(text, _)| text == label)
+                .map(|(_, rect)| rect.top())
+                .unwrap_or_else(|| panic!("{label} is offered, got {shown:?}"))
         };
-        let tip = "Click to change the visualizer";
-
-        // #given the tooltip shown over the empty margin beside the cover
-        let empty = egui::pos2(6.0, 796.0);
-        for _ in 0..3 {
-            draw(&mut app, empty);
+        let mut previous = f32::NEG_INFINITY;
+        for entry in entries {
+            let at = top(entry);
+            assert!(
+                at > previous,
+                "{entry} follows the earlier entries, got {shown:?}"
+            );
+            previous = at;
         }
-        assert!(draw(&mut app, empty).iter().any(|text| text == tip));
+        assert!(
+            !shown.iter().any(|(text, _)| text == "Spectrum"),
+            "the looks wait for their submenu, got {shown:?}"
+        );
+        // Hovering the submenu entry reveals every choice, including off.
+        // The menu is still open: choosing comes after hovering.
+        let at = shown
+            .iter()
+            .find(|(text, _)| text == "Audio visualiser")
+            .map(|(_, rect)| rect.center())
+            .expect("the submenu entry");
+        draw(&mut app, vec![egui::Event::PointerMoved(at)]);
+        let shown = painted(&draw(&mut app, vec![]));
+        for option in ["Disabled", "Spectrum", "Waveform"] {
+            assert!(
+                shown.iter().any(|(text, _)| text == option),
+                "{option} is offered, got {shown:?}"
+            );
+        }
+        // The source entry opens the playing playlist; choosing closes
+        // the menu, so this runs last.
+        let at = shown
+            .iter()
+            .find(|(text, _)| text == "Go to Late night focus")
+            .map(|(_, rect)| rect.center())
+            .expect("the source entry");
+        draw(&mut app, pointer_click(at, egui::PointerButton::Primary));
+        assert!(
+            matches!(
+                app.actions.as_slice(),
+                [Action::Open(Page::Playlist(id))] if id == "pl1"
+            ),
+            "the source entry opens its page, got {:?}",
+            app.actions
+        );
+        app.actions.clear();
+        // Choosing through the action sticks.
+        app.apply(
+            Action::SetPlayerBarVis(crate::settings::PlayerBarVis::Waveform),
+            &ctx,
+        );
+        assert_eq!(
+            app.settings.player_bar_vis,
+            crate::settings::PlayerBarVis::Waveform
+        );
 
-        // #when the pointer moves onto the play button
+        // The play button, in the middle of the bar, is still the play button.
+        // Dismiss the open submenu far above the bar first, so the click
+        // below lands on the button itself.
+        draw(
+            &mut app,
+            pointer_click(egui::pos2(640.0, 100.0), egui::PointerButton::Primary),
+        );
+        app.actions.clear();
         let play = egui::pos2(640.0, 800.0 - crate::theme::PLAYER_BAR_HEIGHT / 2.0 - 10.0);
-        for _ in 0..3 {
-            draw(&mut app, play);
-        }
-
-        // #then the tooltip is gone
-        let shown = draw(&mut app, play);
-        assert!(!shown.iter().any(|text| text == tip), "{shown:?}");
+        draw(&mut app, pointer_click(play, egui::PointerButton::Primary));
+        assert!(
+            !app.actions
+                .iter()
+                .any(|action| matches!(action, Action::SetPlayerBarVis(_))),
+            "{:?}",
+            app.actions
+        );
         app.backend.shutdown();
     }
 

@@ -236,6 +236,8 @@ fn contents(app: &mut App, ui: &mut egui::Ui, compact: bool) {
     // page, so its name is plain text.
     if let Some(from) = app.playing_from().filter(|_| current.is_some()) {
         ui.horizontal(|ui| {
+            // A word space, like the bylines, not the wider row gap.
+            ui.spacing_mut().item_spacing.x = 4.0;
             theme::text(
                 ui,
                 gettext(app.locale, "Playing from"),

@@ -64,25 +64,192 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             if visualizer(app, ui, behind, now.as_ref()) {
                 ui.ctx().request_repaint_after(VIS_FRAME);
             }
-            // Its empty space is the visualizer's control, as Winamp's
-            // visualizer was: a click moves to the next mode. The controls
-            // drawn after it take their own clicks.
+            // Its empty space opens the song menu on right-click. The
+            // controls drawn after it take their own clicks.
             let empty = ui.interact(
                 behind,
                 ui.id().with("player-bar-visualizer"),
                 Sense::click(),
             );
-            // An open tooltip stays while the pointer is inside its widget's
-            // rect, and this one spans the bar: offer it only while the empty
-            // space itself is hovered, not the controls over it.
-            let empty = if empty.hovered() {
-                empty
-                    .on_hover_text_at_pointer(gettext(app.locale, "Click to change the visualizer"))
-            } else {
-                empty
-            };
-            if empty.clicked() {
-                app.actions.push(Action::CyclePlayerBarVis);
+            {
+                use crate::api::models::PlayableItem;
+                use crate::settings::PlayerBarVis;
+                let locale = app.locale;
+                let current = app.settings.player_bar_vis;
+                // The playing song with its cached details when known, so
+                // the menu can act on it like any other song row.
+                let item = app.now_playing_item();
+                let album_id = now.as_ref().and_then(|now| now.album_id.clone());
+                // Where the song plays from, when that has a page to open.
+                let from = app.playing_from();
+                egui::Popup::context_menu(&empty)
+                    // The menu opens right of the cursor, flipping left
+                    // when it would overflow the window.
+                    .align(egui::RectAlign::RIGHT_START)
+                    .frame(super::widgets::menu_frame(&palette))
+                    .show(|ui| {
+                        // The entries paint themselves and take whatever
+                        // width is offered, so size the menu from its text
+                        // like the sidebar sort menu does. Roomier rows
+                        // than the shared menu default.
+                        ui.spacing_mut().item_spacing.y = 6.0;
+                        let queue = gettext(locale, "Add to queue");
+                        let playlist = gettext(locale, "Add to playlist");
+                        let source = from.as_ref().map(|from| {
+                            gettext(locale, "Go to {name}").replace("{name}", &from.name)
+                        });
+                        let radio = gettext(locale, "Go to song radio");
+                        let album = gettext(locale, "Go to album");
+                        let copy = gettext(locale, "Copy link to song");
+                        let visualiser = gettext(locale, "Audio visualiser");
+                        // Every row carries an icon; submenu rows also
+                        // carry the arrow, matching their painting.
+                        let arrow = ui
+                            .painter()
+                            .layout_no_wrap(
+                                egui::menu::SubMenuButton::RIGHT_ARROW.to_string(),
+                                theme::regular(11.0),
+                                palette.text,
+                            )
+                            .size()
+                            .x;
+                        let mut rows: Vec<(&str, bool)> = Vec::new();
+                        if item.is_some() {
+                            rows.push((&queue, false));
+                            rows.push((&playlist, true));
+                            if let Some(source) = &source {
+                                rows.push((source, false));
+                            }
+                            rows.push((&radio, false));
+                            if album_id.is_some() {
+                                rows.push((&album, false));
+                            }
+                        }
+                        if now.is_some() {
+                            rows.push((&copy, false));
+                        }
+                        rows.push((&visualiser, true));
+                        let mut width = 0.0_f32;
+                        for (label, submenu) in &rows {
+                            let text = ui
+                                .painter()
+                                .layout_no_wrap(
+                                    label.to_string(),
+                                    theme::regular(13.5),
+                                    palette.text,
+                                )
+                                .size()
+                                .x;
+                            width =
+                                width.max(text + 46.0 + if *submenu { arrow + 6.0 } else { 0.0 });
+                        }
+                        ui.set_width(width.min(ui.ctx().content_rect().width() - 24.0));
+                        if let Some(item) = &item {
+                            let uri = item.uri().to_string();
+                            let label = item.name().to_string();
+                            if super::widgets::menu_item(
+                                ui,
+                                &palette,
+                                Some(Icon::ListEnd),
+                                &gettext(locale, "Add to queue"),
+                            ) {
+                                app.actions.push(Action::AddToQueue {
+                                    uri: uri.clone(),
+                                    label: label.clone(),
+                                });
+                            }
+                            super::widgets::add_to_playlist_menu(
+                                ui,
+                                app,
+                                std::slice::from_ref(item),
+                            );
+                            super::widgets::menu_separator(ui, &palette);
+                            if let Some(from) = &from
+                                && let Some(page) = &from.page
+                                && super::widgets::menu_item(
+                                    ui,
+                                    &palette,
+                                    Some(Icon::ListMusic),
+                                    &gettext(locale, "Go to {name}").replace("{name}", &from.name),
+                                )
+                            {
+                                app.actions.push(Action::Open(page.clone()));
+                            }
+                            if let PlayableItem::Track(track) = item
+                                && super::widgets::menu_item(
+                                    ui,
+                                    &palette,
+                                    Some(Icon::Radio),
+                                    &gettext(locale, "Go to song radio"),
+                                )
+                            {
+                                app.actions.push(Action::OpenSongRadio {
+                                    uri: uri.clone(),
+                                    track: Box::new(track.clone()),
+                                });
+                            }
+                            if let Some(id) = &album_id
+                                && super::widgets::menu_item(
+                                    ui,
+                                    &palette,
+                                    Some(Icon::Disc),
+                                    &gettext(locale, "Go to album"),
+                                )
+                            {
+                                app.actions.push(Action::Open(Page::Album(id.clone())));
+                            }
+                            super::widgets::menu_separator(ui, &palette);
+                        }
+                        if super::widgets::menu_item_enabled(
+                            ui,
+                            &palette,
+                            Some(Icon::Copy),
+                            &gettext(locale, "Copy link to song"),
+                            now.is_some(),
+                        ) && let Some(now) = &now
+                        {
+                            app.actions.push(Action::CopyLink(now.uri.clone()));
+                        }
+                        if now.is_some() {
+                            super::widgets::menu_separator(ui, &palette);
+                        }
+                        super::widgets::menu_submenu(
+                            ui,
+                            &palette,
+                            Some(Icon::AudioLines),
+                            &gettext(locale, "Audio visualiser"),
+                            |ui| {
+                                ui.spacing_mut().item_spacing.y = 6.0;
+                                let modes = [
+                                    (PlayerBarVis::Off, gettext(locale, "Disabled")),
+                                    (PlayerBarVis::Spectrum, gettext(locale, "Spectrum")),
+                                    (PlayerBarVis::Waveform, gettext(locale, "Waveform")),
+                                ];
+                                // Size to the text like the outer menu: every
+                                // row allows the check icon's room.
+                                let mut width = 0.0_f32;
+                                for (_, label) in &modes {
+                                    let text = ui
+                                        .painter()
+                                        .layout_no_wrap(
+                                            label.to_string(),
+                                            theme::regular(13.5),
+                                            palette.text,
+                                        )
+                                        .size()
+                                        .x;
+                                    width = width.max(text + 46.0);
+                                }
+                                ui.set_width(width.min(ui.ctx().content_rect().width() - 24.0));
+                                for (mode, label) in modes {
+                                    let icon = (current == mode).then_some(Icon::Check);
+                                    if super::widgets::menu_item(ui, &palette, icon, &label) {
+                                        app.actions.push(Action::SetPlayerBarVis(mode));
+                                    }
+                                }
+                            },
+                        );
+                    });
             }
             ui.painter().hline(
                 rect.x_range(),
