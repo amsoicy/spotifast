@@ -24,6 +24,8 @@ pub(super) struct Hero<'a> {
     pub title: &'a str,
     pub description: Option<String>,
     pub byline: Vec<(String, Option<Page>)>,
+    /// Static pills on their own row under the byline, e.g. genres.
+    pub pills: Vec<String>,
     pub round: bool,
 }
 
@@ -144,6 +146,14 @@ pub(super) fn hero(app: &mut App, ui: &mut egui::Ui, hero: Hero<'_>) {
                     }
                 }
             });
+            if !hero.pills.is_empty() {
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing.x = 8.0;
+                    for pill in &hero.pills {
+                        theme::pill_label(ui, &palette, pill);
+                    }
+                });
+            }
         });
     });
     ui.add_space(20.0);
@@ -1702,6 +1712,7 @@ fn playlist_hero<'a>(
             title: &playlist.name,
             description: playlist.description.as_deref().map(util::strip_html),
             byline,
+            pills: Vec::new(),
             round: false,
         },
     );
@@ -1827,6 +1838,7 @@ fn album_hero(
             title: &album.name,
             description: None,
             byline,
+            pills: Vec::new(),
             round: false,
         },
     );
@@ -1878,6 +1890,7 @@ pub fn liked(app: &mut App, ui: &mut egui::Ui) {
             title: &liked_title,
             description: None,
             byline: vec![(user, None), (count_text, None)],
+            pills: Vec::new(),
             round: false,
         },
     );

@@ -4684,7 +4684,7 @@ mod tests {
                 playlist as fn(&mut App, &mut egui::Ui),
             ),
             ("Fragments", "Bonobo", album),
-            ("Bonobo", "electronic, downtempo, ambient", artist),
+            ("Bonobo", "electronic", artist),
             ("Rework", "37signals", show),
         ] {
             let painted = view_frame(&ctx, &mut app, vec![], view);
@@ -4732,7 +4732,7 @@ mod tests {
                 playlist as fn(&mut App, &mut egui::Ui),
             ),
             ("Fragments", "Bonobo", album),
-            ("Bonobo", "electronic, downtempo, ambient", artist),
+            ("Bonobo", "electronic", artist),
             ("Rework", "37signals", show),
         ] {
             let painted = view_frame(&ctx, &mut app, vec![], view);

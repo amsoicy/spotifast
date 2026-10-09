@@ -84,7 +84,11 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, id: &str) {
                     }
                 }
                 Loadable::Loaded(_) => {
-                    theme::subtle(ui, &palette, &gettext(locale, "No popular songs to show."));
+                    theme::subtle(
+                        ui,
+                        &palette,
+                        &gettext(locale, "No most popular songs to show."),
+                    );
                 }
                 Loadable::Loading | Loadable::NotLoaded => {
                     widgets::loading_row(ui, &palette, app.locale)
@@ -285,18 +289,9 @@ fn artist_hero(app: &mut App, ui: &mut egui::Ui, artist: &Artist, preview: Optio
             None,
         ));
     }
-    if !artist.genres.is_empty() {
-        byline.push((
-            artist
-                .genres
-                .iter()
-                .take(3)
-                .cloned()
-                .collect::<Vec<_>>()
-                .join(", "),
-            None,
-        ));
-    }
+
+    // Genres draw as pills on their own row under the followers.
+    let pills: Vec<String> = artist.genres.iter().take(3).cloned().collect();
     let images = hero_images(
         &artist.images,
         preview.map(|artist| artist.images.as_slice()),
@@ -312,6 +307,7 @@ fn artist_hero(app: &mut App, ui: &mut egui::Ui, artist: &Artist, preview: Optio
             title: &artist.name,
             description: None,
             byline,
+            pills,
             round: true,
         },
     );

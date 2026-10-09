@@ -125,6 +125,7 @@ fn show_hero(app: &mut App, ui: &mut egui::Ui, show: &Show, preview: Option<&Sho
             title: &show.name,
             description: None,
             byline,
+            pills: Vec::new(),
             round: false,
         },
     );

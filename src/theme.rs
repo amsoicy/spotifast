@@ -693,6 +693,35 @@ pub fn pill_button(ui: &mut egui::Ui, palette: &Palette, label: &str, primary: b
     response
 }
 
+/// A non-interactive pill label, e.g. an artist's genres under the
+/// follower count: the muted soft-button look without the click.
+pub fn pill_label(ui: &mut egui::Ui, palette: &Palette, label: &str) {
+    let font = medium(13.0);
+    let galley = crate::bidi::layout_line(ui.painter(), label, font, palette.text);
+    let padding = Vec2::new(8.0, 5.0);
+    let size = Vec2::new(galley.size().x, galley.size().y) + padding * 2.0;
+    let (rect, response) = ui.allocate_exact_size(size, Sense::hover());
+    response
+        .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, ui.is_enabled(), label));
+    if ui.is_rect_visible(rect) {
+        ui.painter()
+            .rect_filled(rect, rect.height() / 2.0, palette.surface_hover);
+        // An edge in dim keeps the pill readable where the fill meets
+        // the background, mirroring the outlined pill button.
+        ui.painter().rect_stroke(
+            rect,
+            rect.height() / 2.0,
+            Stroke::new(1.0, palette.dim),
+            egui::StrokeKind::Inside,
+        );
+        let pos = egui::pos2(
+            rect.left() + padding.x,
+            rect.center().y - galley.size().y / 2.0,
+        );
+        ui.painter().galley(pos, galley, palette.text);
+    }
+}
+
 /// A muted button with an icon and label, for row and header actions.
 pub fn soft_button(
     ui: &mut egui::Ui,
