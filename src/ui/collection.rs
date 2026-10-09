@@ -17,6 +17,9 @@ use crate::util;
 
 use super::widgets::{self, TrackRow};
 
+/// The filter box on the Liked Songs page.
+pub const LIKED_FILTER_KEY: &str = "liked-filter";
+
 pub(super) struct Hero<'a> {
     pub images: HeroImages<'a>,
     pub liked: bool,
@@ -1898,7 +1901,7 @@ pub fn liked(app: &mut App, ui: &mut egui::Ui) {
         .user
         .as_ref()
         .map(|user| format!("spotify:user:{}:collection", user.id));
-    let filter_id = egui::Id::new("liked-filter");
+    let filter_id = egui::Id::new(LIKED_FILTER_KEY);
     let mut filter = ui
         .data(|data| data.get_temp::<String>(filter_id))
         .unwrap_or_default();

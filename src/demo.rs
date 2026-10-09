@@ -4749,6 +4749,232 @@ mod tests {
         app.backend.shutdown();
     }
 
+    #[test]
+    fn artist_page_shows_liked_songs_without_popularity() {
+        fn artist(app: &mut App, ui: &mut egui::Ui) {
+            crate::ui::artist::show(app, ui, "art0");
+        }
+        let (ctx, mut app) = accessible_app("artist-liked-songs");
+        let painted = view_frame(&ctx, &mut app, vec![], artist);
+        let followers = "1,284,930 followers";
+        let top = |needle: &str| {
+            painted
+                .iter()
+                .find(|(text, _)| text == needle)
+                .map(|(_, rect)| rect.top())
+                .unwrap_or_else(|| panic!("{needle} is drawn"))
+        };
+        // Followers on their own line, genre pills on the row below.
+        let followers_top = top(followers);
+        for genre in ["electronic", "downtempo", "ambient"] {
+            assert!(
+                top(genre) > followers_top,
+                "{genre} sits below the followers"
+            );
+        }
+        assert!(
+            !painted
+                .iter()
+                .any(|(text, _)| text.split_whitespace().last() == Some("pop")),
+            "the popularity score is gone"
+        );
+        assert!(top("Most popular") < top("Liked songs"));
+        assert!(top("Liked songs") < top("Discography"));
+        for n in 0..4 {
+            app.library.liked.items.push(SavedTrack {
+                added_at: None,
+                track: Track {
+                    id: Some(format!("liked-extra-{n}")),
+                    name: format!("Liked Extra {n}"),
+                    uri: format!("spotify:track:liked-extra-{n}"),
+                    artists: vec![ArtistRef {
+                        id: Some("art0".into()),
+                        name: "Bonobo".into(),
+                        uri: Some("spotify:artist:art0".into()),
+                    }],
+                    ..Track::default()
+                },
+            });
+        }
+        let painted = view_frame(&ctx, &mut app, vec![], artist);
+        assert!(
+            painted.iter().any(|(text, _)| text == "See more"),
+            "a long liked list offers more"
+        );
+        assert!(
+            !painted.iter().any(|(text, _)| text == "Liked Extra 3"),
+            "only the first five liked songs show"
+        );
+        // See more under Liked songs opens the songs on a card.
+        let liked_top = painted
+            .iter()
+            .find(|(text, _)| text == "Liked songs")
+            .map(|(_, rect)| rect.top())
+            .expect("Liked songs is drawn");
+        // "Tides" is a liked song by another artist and a popular track
+        // here: it may show above, but never inside the liked list.
+        assert!(
+            painted
+                .iter()
+                .filter(|(text, _)| text == "Tides")
+                .all(|(_, rect)| rect.top() < liked_top),
+            "only this artist's songs list their likes"
+        );
+        let more = painted
+            .iter()
+            .filter(|(text, _)| text == "See more")
+            .map(|(_, rect)| rect.center())
+            .find(|pos| pos.y > liked_top)
+            .expect("the liked list's See more");
+        view_frame(
+            &ctx,
+            &mut app,
+            pointer_click(more, egui::PointerButton::Primary),
+            artist,
+        );
+        assert!(
+            app.actions
+                .iter()
+                .any(|action| matches!(action, Action::OpenArtistLiked(id) if id == "art0")),
+            "See more opens the liked card, got {:?}",
+            app.actions
+        );
+        app.actions.clear();
+        app.apply(Action::OpenArtistLiked("art0".into()), &ctx);
+        // The card measures invisibly on its first frame, like dialogs.
+        view_frame(&ctx, &mut app, vec![], artist);
+        let painted = view_frame(&ctx, &mut app, vec![], artist);
+        assert!(
+            painted.iter().any(|(text, _)| text == "Liked Extra 3"),
+            "the card holds the whole liked list"
+        );
+        assert!(
+            painted
+                .iter()
+                .any(|(text, _)| text == "Liked songs from Bonobo"),
+            "the card names its artist"
+        );
+        // A click outside the card closes it again.
+        view_frame(
+            &ctx,
+            &mut app,
+            pointer_click(egui::pos2(10.0, 10.0), egui::PointerButton::Primary),
+            artist,
+        );
+        assert!(
+            app.actions
+                .iter()
+                .any(|action| matches!(action, Action::CloseArtistLiked)),
+            "an outside click closes the card, got {:?}",
+            app.actions
+        );
+        app.actions.clear();
+        app.apply(Action::OpenArtistLiked("art0".into()), &ctx);
+        // The card measures invisibly on its first frame, like dialogs.
+        view_frame(&ctx, &mut app, vec![], artist);
+        let painted = view_frame(&ctx, &mut app, vec![], artist);
+        assert!(
+            painted.iter().any(|(text, _)| text == "Liked Extra 3"),
+            "the card holds the whole liked list"
+        );
+        // Double-clicking a card song plays it where it sits instead of
+        // leaving the page. Extra 3 sits past the section's five, so
+        // only the card can hold it. The clicks carry explicit times:
+        // headless frames otherwise advance time by measured wall
+        // time, which a heavy page can push past the double-click
+        // window and turn the pair into two singles.
+        let at = painted
+            .iter()
+            .find(|(text, _)| text == "Liked Extra 3")
+            .map(|(_, rect)| rect.center())
+            .expect("the card song");
+        let [first, second] = double_click(at);
+        let mut time = 100.0;
+        let mut frame = |events: Vec<egui::Event>| {
+            time += 0.05;
+            let _ = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1280.0, 2200.0),
+                    )),
+                    time: Some(time),
+                    events,
+                    ..Default::default()
+                },
+                |ui| artist(&mut app, ui),
+            );
+        };
+        frame(first);
+        frame(second);
+        assert!(
+            app.actions.iter().any(|action| matches!(
+                action,
+                Action::PlayFromRow { uri, .. } if uri == "spotify:track:liked-extra-3"
+            )),
+            "the card song plays, got {:?}",
+            app.actions
+        );
+        assert!(
+            !app.actions
+                .iter()
+                .any(|action| matches!(action, Action::Open(_))),
+            "double-click stays on the artist page"
+        );
+        app.actions.clear();
+        // Right-clicking a card song offers the ordinary song menu.
+        let painted = view_frame(&ctx, &mut app, vec![], artist);
+        let at = painted
+            .iter()
+            .find(|(text, _)| text == "Liked Extra 3")
+            .map(|(_, rect)| rect.center())
+            .expect("the card song");
+        view_frame(
+            &ctx,
+            &mut app,
+            pointer_click(at, egui::PointerButton::Secondary),
+            artist,
+        );
+        let painted = view_frame(&ctx, &mut app, vec![], artist);
+        let add = painted
+            .iter()
+            .find(|(text, _)| text == "Add to queue")
+            .map(|(_, rect)| rect.center())
+            .expect("the card song menu");
+        view_frame(
+            &ctx,
+            &mut app,
+            pointer_click(add, egui::PointerButton::Primary),
+            artist,
+        );
+        assert!(
+            app.actions.iter().any(|action| matches!(
+                action,
+                Action::AddToQueue { uri, .. } if uri == "spotify:track:liked-extra-3"
+            )),
+            "the card menu queues the song, got {:?}",
+            app.actions
+        );
+        app.actions.clear();
+        app.library.liked.items.retain(|saved| {
+            !saved
+                .track
+                .artists
+                .iter()
+                .any(|credit| credit.id.as_deref() == Some("art0"))
+        });
+        let painted = view_frame(&ctx, &mut app, vec![], artist);
+        assert!(
+            !painted.iter().any(|(text, _)| text == "Liked songs"),
+            "without a liked song the section hides"
+        );
+        assert!(
+            painted.iter().any(|(text, _)| text == "Most popular"),
+            "Most popular stays"
+        );
+        app.backend.shutdown();
+    }
+
     fn pointer_click(pos: egui::Pos2, button: egui::PointerButton) -> Vec<egui::Event> {
         vec![
             egui::Event::PointerMoved(pos),

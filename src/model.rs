@@ -1081,6 +1081,8 @@ pub enum Action {
         filter: DiscographyFilter,
     },
     ToggleShowAllTop(String),
+    OpenArtistLiked(String),
+    CloseArtistLiked,
     Reload(Page),
     SignIn,
     CancelSignIn,

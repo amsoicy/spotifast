@@ -361,6 +361,8 @@ pub struct App {
     load_generation: u64,
     pub album_pages: HashMap<String, AlbumPage>,
     pub artist_pages: HashMap<String, ArtistPage>,
+    /// Artist whose liked-songs card is open over its page, if any.
+    pub artist_liked_open: Option<String>,
     pub show_pages: HashMap<String, ShowPage>,
     /// Radio pages by the seed's URI.
     pub radio_pages: HashMap<String, RadioPage>,
@@ -830,6 +832,7 @@ impl App {
             load_generation: 0,
             album_pages: HashMap::new(),
             artist_pages: HashMap::new(),
+            artist_liked_open: None,
             show_pages: HashMap::new(),
             radio_pages: HashMap::new(),
             track_cache: HashMap::new(),
@@ -6245,6 +6248,9 @@ impl App {
     // ---- navigation ------------------------------------------------------------
 
     pub fn open(&mut self, page: Page) {
+        // A liked-songs card belongs to its artist page: navigating
+        // anywhere else leaves it behind.
+        self.artist_liked_open = None;
         self.touch_page(&page);
         if *self.page() == page {
             self.ensure_loaded(page.clone());
@@ -8881,6 +8887,12 @@ impl App {
                 if let Some(page) = self.artist_pages.get_mut(&id) {
                     page.show_all_top = !page.show_all_top;
                 }
+            }
+            Action::OpenArtistLiked(id) => {
+                self.artist_liked_open = Some(id);
+            }
+            Action::CloseArtistLiked => {
+                self.artist_liked_open = None;
             }
             Action::Reload(page) => self.reload(page),
             Action::SignIn => self.request_proxy(true),
