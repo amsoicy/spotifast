@@ -44,6 +44,19 @@ const TOAST_LIFETIME: Duration = Duration::from_millis(3200);
 /// from delayed repaints, so 33 ms drives roughly one frame per 16 ms.
 const TOAST_FRAME: Duration = Duration::from_millis(33);
 const OPTIMISTIC_HOLD: Duration = Duration::from_millis(2500);
+/// How long a remote volume request counts as in flight. A lost answer
+/// (sign-out, hung request) must not pin later turns behind it forever.
+const VOLUME_FLIGHT_TIMEOUT: Duration = Duration::from_secs(10);
+/// A burst of remote volume turns sends first at once, then waits for this
+/// much quiet before sending its latest level: rapid turns would otherwise
+/// race Spotify with an absolute level per frame, and the device plays the
+/// stale intermediates back in order after release.
+const REMOTE_VOLUME_DEBOUNCE: Duration = Duration::from_millis(300);
+/// A burst of local turns hits the mixer at once but syncs the Connect
+/// session only after this much quiet: each sync can stall behind the
+/// session, so a per-frame sync would walk the mixer through the backlog
+/// for seconds after release.
+const LOCAL_VOLUME_SETTLE: Duration = Duration::from_millis(300);
 
 /// How long a newly started context remains visible while Spotify catches up.
 /// During local takeover, Spotify may briefly alternate between old and new
@@ -470,10 +483,24 @@ pub struct App {
     pub web_app: Option<String>,
     pending_remote_position: Option<(u32, Instant)>,
     pending_remote_volume: Option<(u8, Instant)>,
+    /// A remote volume request in flight, by level sent and when. Rapid
+    /// wheel turns queue only their latest level behind it instead of
+    /// racing Spotify with an absolute level per frame, which lands out
+    /// of order and makes the volume wander.
+    remote_volume_flight: Option<(u8, Instant)>,
+    /// The latest level asked for while a remote volume request flies.
+    queued_remote_volume: Option<u8>,
+    /// When the queued level may go: refreshed by every turn of a burst,
+    /// so it fires at the first quiet moment after one.
+    remote_volume_send_at: Option<Instant>,
     /// A local volume set here that the engine has not echoed back yet. It
     /// reports `VolumeChanged` asynchronously while position snapshots land
     /// every second, so a snapshot must not undo the change on its way past.
     pending_local_volume: Option<(u16, Instant)>,
+    /// When a burst of local turns may sync its level to the Connect
+    /// session: refreshed by every settled turn, so it fires at the first
+    /// quiet moment after one.
+    local_volume_settle_at: Option<Instant>,
     /// A local seek position set here that the engine has not confirmed yet.
     pending_local_position: Option<(u32, Instant)>,
     optimistic_playing: Option<(bool, Instant)>,
@@ -897,7 +924,11 @@ impl App {
             web_app: None,
             pending_remote_position: None,
             pending_remote_volume: None,
+            remote_volume_flight: None,
+            queued_remote_volume: None,
+            remote_volume_send_at: None,
             pending_local_volume: None,
+            local_volume_settle_at: None,
             pending_local_position: None,
             optimistic_playing: None,
             intent_track: None,
@@ -2783,6 +2814,24 @@ impl App {
             {
                 self.remote_recheck_at = None;
                 self.poll_remote(true);
+            }
+            if self
+                .remote_volume_send_at
+                .is_some_and(|due| Instant::now() >= due)
+            {
+                self.flush_remote_volume();
+            }
+            if self.remote_volume_send_at.is_some() {
+                ctx.request_repaint_after(Duration::from_millis(50));
+            }
+            if self
+                .local_volume_settle_at
+                .is_some_and(|due| Instant::now() >= due)
+            {
+                self.flush_local_volume_settle();
+            }
+            if self.local_volume_settle_at.is_some() {
+                ctx.request_repaint_after(Duration::from_millis(50));
             }
             if self.show_devices
                 && !self.devices_loading
@@ -6156,11 +6205,23 @@ impl App {
                                 self.note_shuffle_pending();
                             }
                         }
+                        if matches!(action, RemoteAction::Volume) {
+                            self.remote_volume_flight = None;
+                            // A newer turn may have queued behind the
+                            // flight; it goes through the debounce, so a
+                            // burst still turning holds it for the quiet
+                            // point instead of chasing intermediates.
+                            self.flush_remote_volume();
+                        }
                     }
                     Err(error) => {
                         self.optimistic_playing = None;
                         self.pending_remote_position = None;
                         self.pending_remote_volume = None;
+                        if matches!(action, RemoteAction::Volume) {
+                            self.remote_volume_flight = None;
+                            self.queued_remote_volume = None;
+                        }
                         if matches!(
                             action,
                             RemoteAction::Play | RemoteAction::Next | RemoteAction::Previous
@@ -7312,26 +7373,91 @@ impl App {
                     self.settings.volume = volume;
                     self.settings_dirty = true;
                 }
-                self.backend.player(if settle {
-                    PlayerCommand::Volume(volume)
-                } else {
-                    PlayerCommand::VolumePreview(volume)
-                });
+                // Every turn hits the mixer at once; the Connect sync
+                // waits for a quiet moment so a burst cannot stack slow
+                // syncs behind it (see flush).
+                self.backend.player(PlayerCommand::VolumePreview(volume));
+                if settle {
+                    self.local_volume_settle_at = Some(Instant::now() + LOCAL_VOLUME_SETTLE);
+                }
             }
             Target::Remote(_) if !settle || !self.can_set_volume() => {}
-            Target::Remote(device_id) => {
+            Target::Remote(_) => {
                 self.pending_remote_volume = Some((percent, Instant::now()));
-                self.backend.api(ApiRequest::Remote {
-                    action: RemoteAction::Volume,
-                    device_id,
-                    play: None,
-                    position_ms: 0,
-                    percent,
-                    flag: false,
-                    repeat: String::new(),
-                });
+                self.queued_remote_volume = Some(percent);
+                // Leading edge sends at once for a responsive start; the
+                // rest of a burst waits for a quiet moment (see flush).
+                let idle = match self.remote_volume_flight {
+                    None => true,
+                    Some((_, at)) if at.elapsed() >= VOLUME_FLIGHT_TIMEOUT => {
+                        self.remote_volume_flight = None;
+                        true
+                    }
+                    Some(_) => false,
+                };
+                if idle {
+                    self.remote_volume_send_at = None;
+                    self.flush_remote_volume();
+                } else {
+                    self.remote_volume_send_at = Some(Instant::now() + REMOTE_VOLUME_DEBOUNCE);
+                }
             }
         }
+    }
+
+    /// Sends the latest queued remote level once no request flies and its
+    /// debounce has passed, so a burst settles on its final level instead
+    /// of walking the device through stale intermediates after release.
+    fn flush_remote_volume(&mut self) {
+        if self
+            .remote_volume_flight
+            .is_some_and(|(_, at)| at.elapsed() < VOLUME_FLIGHT_TIMEOUT)
+        {
+            return;
+        }
+        self.remote_volume_flight = None;
+        if self
+            .remote_volume_send_at
+            .is_some_and(|due| Instant::now() < due)
+        {
+            return; // still turning; the timer wakes for the quiet point
+        }
+        let Some(percent) = self.queued_remote_volume.take() else {
+            return;
+        };
+        let Target::Remote(device_id) = self.target() else {
+            return;
+        };
+        self.remote_volume_send_at = None;
+        self.remote_volume_flight = Some((percent, Instant::now()));
+        self.backend.api(ApiRequest::Remote {
+            action: RemoteAction::Volume,
+            device_id,
+            play: None,
+            position_ms: 0,
+            percent,
+            flag: false,
+            repeat: String::new(),
+        });
+    }
+
+    /// Syncs the mixer's level to the Connect session once local turns go
+    /// quiet. Every turn already hit the mixer at once via preview; sending
+    /// the slow sync per frame would stack them behind the session and walk
+    /// the mixer through the backlog for seconds after release.
+    fn flush_local_volume_settle(&mut self) {
+        if self
+            .local_volume_settle_at
+            .is_some_and(|due| Instant::now() < due)
+        {
+            return; // still turning; the timer wakes for the quiet point
+        }
+        self.local_volume_settle_at = None;
+        if !matches!(self.target(), Target::Local) {
+            return;
+        }
+        self.backend
+            .player(PlayerCommand::Volume(self.local.volume));
     }
 
     fn note_shuffle_pending(&mut self) {
@@ -21007,6 +21133,99 @@ mod tests {
         assert!(app.can_set_volume());
         app.apply(Action::SetVolume(10), &ctx);
         assert!(matches!(app.pending_remote_volume, Some((10, _))));
+        app.backend.shutdown();
+    }
+
+    /// A burst of remote volume turns sends first at once, then holds
+    /// the rest for a quiet moment: only the latest level follows, so
+    /// Spotify never walks the device through stale intermediates.
+    #[test]
+    fn rapid_remote_volume_turns_coalesce_behind_one_request() {
+        let ctx = egui::Context::default();
+        let mut app = headless_app();
+        app.attach(&ctx);
+        crate::demo::populate(&mut app);
+        app.local_ready = false;
+        app.frame_now = None;
+        assert!(matches!(app.target(), Target::Remote(_)));
+        assert!(app.can_set_volume());
+
+        // #when three turns land while the first request flies
+        app.apply(Action::SetVolume(50), &ctx);
+        app.apply(Action::SetVolume(60), &ctx);
+        app.apply(Action::SetVolume(70), &ctx);
+
+        // #then only the first left, but the bar already shows the latest
+        let sent = app.backend.take_remote_volume_requests();
+        assert!(
+            matches!(sent.as_slice(), [ApiRequest::Remote { percent: 50, .. }]),
+            "got {sent:?}"
+        );
+        assert_eq!(app.now_playing().unwrap().volume_percent, 70);
+
+        // #when the flight lands mid-burst, nothing follows yet
+        app.handle_api(ApiResponse::Remote {
+            action: RemoteAction::Volume,
+            result: Ok(()),
+        });
+        assert!(app.backend.take_remote_volume_requests().is_empty());
+
+        // #when the quiet point passes, only the latest queued level goes
+        app.remote_volume_send_at = Some(Instant::now() - Duration::from_secs(1));
+        app.flush_remote_volume();
+        let sent = app.backend.take_remote_volume_requests();
+        assert!(
+            matches!(sent.as_slice(), [ApiRequest::Remote { percent: 70, .. }]),
+            "got {sent:?}"
+        );
+
+        // #when that lands with nothing queued, the line goes quiet
+        app.handle_api(ApiResponse::Remote {
+            action: RemoteAction::Volume,
+            result: Ok(()),
+        });
+        assert!(app.backend.take_remote_volume_requests().is_empty());
+        app.backend.shutdown();
+    }
+
+    /// A burst of local volume turns hits the mixer at once but syncs the
+    /// Connect session only at the quiet point: no per-frame sync stacks
+    /// behind the session to walk through after release.
+    #[test]
+    fn rapid_local_volume_turns_preview_at_once_and_settle_once_quiet() {
+        let ctx = egui::Context::default();
+        let mut app = headless_app();
+        app.attach(&ctx);
+        crate::demo::populate(&mut app);
+        app.remote = None;
+        app.local_ready = true;
+        assert!(matches!(app.target(), Target::Local));
+
+        // #when three turns land in a burst
+        app.apply(Action::SetVolume(50), &ctx);
+        app.apply(Action::SetVolume(60), &ctx);
+        app.apply(Action::SetVolume(70), &ctx);
+
+        // #then every turn hit the mixer at once, with no sync yet
+        assert_eq!(volume_to_percent(app.local.volume), 70);
+        assert!(app.local_volume_settle_at.is_some());
+        assert_eq!(
+            app.backend.take_player_commands(),
+            [
+                PlayerCommand::VolumePreview(percent_to_volume(50)),
+                PlayerCommand::VolumePreview(percent_to_volume(60)),
+                PlayerCommand::VolumePreview(percent_to_volume(70)),
+            ]
+        );
+
+        // #when the quiet point passes, only one sync follows
+        app.local_volume_settle_at = Some(Instant::now() - Duration::from_secs(1));
+        app.flush_local_volume_settle();
+        assert_eq!(
+            app.backend.take_player_commands(),
+            [PlayerCommand::Volume(percent_to_volume(70))]
+        );
+        assert!(app.local_volume_settle_at.is_none());
         app.backend.shutdown();
     }
 
