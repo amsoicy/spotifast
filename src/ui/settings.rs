@@ -1857,7 +1857,11 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     let source_code = gettext(locale, "Source code");
     let about_rows = [
         RowText::new(
-            format!("Spotifast {}", env!("CARGO_PKG_VERSION")),
+            format!(
+                "Spotifast {} (Mod: {})",
+                env!("CARGO_PKG_VERSION"),
+                env!("MODIFIED_VERSION")
+            ),
             built_with.clone(),
         ),
         RowText::new(
@@ -1874,7 +1878,11 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 ui.vertical(|ui| {
                     theme::text(
                         ui,
-                        format!("Spotifast {}", env!("CARGO_PKG_VERSION")),
+                        format!(
+                            "Spotifast {} (Mod: {})",
+                            env!("CARGO_PKG_VERSION"),
+                            env!("MODIFIED_VERSION")
+                        ),
                         theme::semibold(15.0),
                         palette.text,
                     );

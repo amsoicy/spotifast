@@ -1066,6 +1066,8 @@ pub enum Action {
     ForgetSearch(String),
     SetSearchFilter(SearchFilter),
     FocusSearch,
+    /// Focus the song list's filter box on the open page.
+    FocusFilter,
     LoadMore(Page),
     LoadWindow {
         page: Page,

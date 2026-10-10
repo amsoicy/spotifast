@@ -10,6 +10,11 @@ repository = "https://github.com/crmne/spotifast"
 keywords = ["spotify", "music", "egui", "librespot", "player"]
 categories = ["multimedia::audio"]
 
+# The fork's own version marker, shown beside the upstream version in
+# Settings > About. Read by build.rs into MODIFIED_VERSION.
+[package.metadata.spotifast]
+modified_version = "0.0.1"
+
 [lib]
 name = "spotifast"
 path = "src/lib.rs"

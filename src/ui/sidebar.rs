@@ -344,6 +344,71 @@ pub(crate) fn selected_sort(app: &App, shelf: Filter) -> LibrarySort {
     }
 }
 
+/// Which playlists the Playlists shelf lists. Kept in temporary UI
+/// data next to the shelf choice itself.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum PlaylistScope {
+    #[default]
+    All,
+    Mine,
+}
+
+/// The Playlists shelf choice as a dropdown like the sort menu.
+/// Picking either option opens the shelf.
+fn playlist_scope_menu(
+    app: &mut App,
+    ui: &mut egui::Ui,
+    filter: &mut Filter,
+    scope: &mut PlaylistScope,
+) {
+    let locale = app.locale;
+    let labels = [
+        (PlaylistScope::All, gettext(locale, "All playlists")),
+        (PlaylistScope::Mine, gettext(locale, "My playlists")),
+    ];
+    let label = &labels
+        .iter()
+        .find(|(option, _)| *option == *scope)
+        .expect("scope label")
+        .1;
+    let response = ui.add(
+        egui::Button::image_and_text(
+            Icon::ChevronDown.image(app.palette.text, 15.0),
+            egui::RichText::new(label.as_ref()).font(theme::medium(13.0)),
+        )
+        .wrap()
+        .fill(app.palette.surface)
+        .corner_radius(12)
+        .min_size(vec2(0.0, 28.0)),
+    );
+    egui::Popup::menu(&response)
+        .frame(super::widgets::menu_frame(&app.palette))
+        .show(|ui| {
+            let width = labels
+                .iter()
+                .map(|(_, label)| {
+                    ui.painter()
+                        .layout_no_wrap(label.to_string(), theme::regular(13.5), app.palette.text)
+                        .size()
+                        .x
+                })
+                .fold(140.0_f32, f32::max)
+                + 52.0;
+            ui.set_width(width.min(ui.ctx().content_rect().width() - 24.0));
+            for (option, label) in &labels {
+                if super::widgets::menu_item(
+                    ui,
+                    &app.palette,
+                    (*option == *scope).then_some(Icon::Check),
+                    label,
+                ) {
+                    *scope = *option;
+                    *filter = Filter::Playlists;
+                }
+            }
+        });
+}
+
 fn sort_menu(app: &mut App, ui: &mut egui::Ui, shelf: Filter, selected: LibrarySort) {
     let locale = app.locale;
     let labels = [
@@ -859,6 +924,10 @@ fn contents(app: &mut App, ui: &mut egui::Ui, grid_art: Option<Rect>) {
     ui.add_space(10.0);
 
     let filter_id = egui::Id::new("sidebar-filter");
+    let scope_id = egui::Id::new("sidebar-playlist-scope");
+    let mut scope = ui
+        .data(|data| data.get_temp::<PlaylistScope>(scope_id))
+        .unwrap_or_default();
     let mut filter = ui
         .data(|data| data.get_temp::<Filter>(filter_id))
         .unwrap_or_default();
@@ -958,8 +1027,9 @@ fn contents(app: &mut App, ui: &mut egui::Ui, grid_art: Option<Rect>) {
 
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
+        // The Playlists shelf picks which playlists it lists.
+        playlist_scope_menu(app, ui, &mut filter, &mut scope);
         for (value, label) in [
-            (Filter::Playlists, gettext(locale, "Playlists")),
             (Filter::Albums, gettext(locale, "Albums")),
             (Filter::Artists, gettext(locale, "Artists")),
             (Filter::Podcasts, gettext(locale, "Podcasts")),
@@ -973,6 +1043,7 @@ fn contents(app: &mut App, ui: &mut egui::Ui, grid_art: Option<Rect>) {
     sort_menu(app, ui, filter, sort);
     ui.data_mut(|data| {
         data.insert_temp(filter_id, filter);
+        data.insert_temp(scope_id, scope);
         data.insert_temp(show_search_id, show_search);
     });
     if show_search {
@@ -1036,7 +1107,8 @@ fn contents(app: &mut App, ui: &mut egui::Ui, grid_art: Option<Rect>) {
             if needle.is_empty() || liked.name.to_lowercase().contains(&needle) {
                 entries.push(liked);
             }
-            let show_folders = sort == LibrarySort::Spotify && needle.is_empty();
+            let show_folders =
+                sort == LibrarySort::Spotify && needle.is_empty() && scope == PlaylistScope::All;
             if show_folders {
                 folder_rows(app, &user_id, &mut entries);
             }
@@ -1044,6 +1116,9 @@ fn contents(app: &mut App, ui: &mut egui::Ui, grid_art: Option<Rect>) {
                 Loadable::Loaded(_) if show_folders => {}
                 Loadable::Loaded(playlists) => {
                     for (index, playlist) in playlists.iter().enumerate() {
+                        if scope == PlaylistScope::Mine && !playlist.owned_by(&user_id) {
+                            continue;
+                        }
                         if !needle.is_empty() && !playlist.name.to_lowercase().contains(&needle) {
                             continue;
                         }

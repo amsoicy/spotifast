@@ -52,7 +52,19 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
                 Action::ToggleQueuePanel,
             );
         }
-        key(Modifiers::COMMAND, Key::F, Action::FocusSearch);
+        // Ctrl+Shift+F opens Search from anywhere; Ctrl+F filters the
+        // song list in front of it, or searches when there is none.
+        key(
+            Modifiers::COMMAND | Modifiers::SHIFT,
+            Key::F,
+            Action::FocusSearch,
+        );
+        match app.page() {
+            Page::Playlist(_) | Page::Album(_) | Page::LikedSongs => {
+                key(Modifiers::COMMAND, Key::F, Action::FocusFilter)
+            }
+            _ => key(Modifiers::COMMAND, Key::F, Action::FocusSearch),
+        }
         key(Modifiers::COMMAND, Key::B, Action::ToggleSidebar);
         key(Modifiers::COMMAND, Key::Comma, Action::Open(Page::Settings));
         key(Modifiers::COMMAND, Key::Q, Action::Quit);
@@ -235,12 +247,16 @@ pub fn shortcuts(locale: Locale) -> Vec<(Cow<'static, str>, Cow<'static, str>)> 
             gettext(locale, "Playlist: add the pasted song links"),
         ),
         (
+            keys(platform_shortcut("Ctrl+F", "Cmd+F")),
+            gettext(locale, "Song list: filter"),
+        ),
+        (
             if cfg!(target_os = "macos") {
                 // Translators: Keep the key names. Only the word "or" is translated.
-                gettext(locale, "Cmd+F  or  /")
+                gettext(locale, "Cmd+Shift+F  or  /")
             } else {
                 // Translators: Keep the key names. Only the word "or" is translated.
-                gettext(locale, "Ctrl+F  or  /")
+                gettext(locale, "Ctrl+Shift+F  or  /")
             },
             gettext(locale, "Search"),
         ),
@@ -646,5 +662,106 @@ mod tests {
         );
         app.backend.shutdown();
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// Ctrl+F filters the song list in front of it, or searches when
+    /// there is none; Ctrl+Shift+F always goes to Search.
+    #[test]
+    fn ctrl_f_filters_the_list_or_searches() {
+        let root = std::env::temp_dir().join(format!(
+            "spotifast-filter-shortcut-test-{}",
+            std::process::id()
+        ));
+        let dirs = AppDirs {
+            config: root.join("config"),
+            state: root.join("state"),
+            cache: root.join("cache"),
+        };
+        let mut app = App::new(
+            &crate::backend::Waker::default(),
+            dirs,
+            Settings::default(),
+            AppOptions {
+                media_controls: false,
+                restore_sign_in: false,
+                tray: false,
+            },
+        );
+        crate::demo::populate(&mut app);
+
+        // The modifiers as the platform reports its command key.
+        let command = if cfg!(target_os = "macos") {
+            Modifiers::MAC_CMD | Modifiers::COMMAND
+        } else {
+            Modifiers::CTRL | Modifiers::COMMAND
+        };
+        let shift = command | Modifiers::SHIFT;
+        let ctx = egui::Context::default();
+        let press = |app: &mut App, key: Key, modifiers: Modifiers| {
+            app.actions.clear();
+            let input = egui::RawInput {
+                events: vec![egui::Event::Key {
+                    key,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers,
+                }],
+                ..Default::default()
+            };
+            let mut output = ctx.run_ui(input, |ui| handle(app, ui.ctx()));
+            output.textures_delta.clear();
+            format!("{:?}", app.actions)
+        };
+
+        app.open(Page::Home);
+        assert_eq!(
+            press(&mut app, Key::F, command),
+            format!("{:?}", [Action::FocusSearch]),
+            "without a list, Ctrl+F searches"
+        );
+        app.open(Page::Playlist("pl1".into()));
+        assert_eq!(
+            press(&mut app, Key::F, command),
+            format!("{:?}", [Action::FocusFilter]),
+            "on a playlist, Ctrl+F filters its songs"
+        );
+        app.open(Page::LikedSongs);
+        assert_eq!(
+            press(&mut app, Key::F, command),
+            format!("{:?}", [Action::FocusFilter]),
+            "on Liked Songs, Ctrl+F filters its songs"
+        );
+        app.open(Page::Search);
+        assert_eq!(
+            press(&mut app, Key::F, command),
+            format!("{:?}", [Action::FocusSearch]),
+            "on Search, Ctrl+F stays on search"
+        );
+        assert_eq!(
+            press(&mut app, Key::F, shift),
+            format!("{:?}", [Action::FocusSearch]),
+            "Ctrl+Shift+F always goes to search"
+        );
+        app.backend.shutdown();
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn shortcut_dialog_names_the_find_shortcuts() {
+        let label = |description: &str| {
+            shortcuts(Locale::English)
+                .into_iter()
+                .find(|(_, candidate)| candidate == description)
+                .map(|(keys, _)| keys)
+                .unwrap()
+        };
+        if cfg!(target_os = "macos") {
+            assert_eq!(label("Search"), "Cmd+Shift+F  or  /");
+            assert_eq!(label("Song list: filter"), "Cmd+F");
+        } else {
+            assert_eq!(label("Search"), "Ctrl+Shift+F  or  /");
+            assert_eq!(label("Song list: filter"), "Ctrl+F");
+        }
     }
 }

@@ -42,8 +42,53 @@ fn glew_library(lib: &std::path::Path) -> Option<&'static str> {
         .find(|name| present.iter().any(|found| found == name))
 }
 
+/// Reads the fork's own version marker out of the manifest with std
+/// only: no TOML crate for a single `key = "value"` line.
+fn modified_version() -> Option<String> {
+    let manifest =
+        std::path::PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR")?).join("Cargo.toml");
+    let text = std::fs::read_to_string(manifest).ok()?;
+    let mut in_section = false;
+    for raw in text.lines() {
+        let line = raw.trim();
+        if line.starts_with('[') {
+            in_section = line == "[package.metadata.spotifast]";
+            continue;
+        }
+        if !in_section {
+            continue;
+        }
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        if key.trim() != "modified_version" {
+            continue;
+        }
+        let value = value
+            .split('#')
+            .next()
+            .unwrap_or("")
+            .trim()
+            .trim_matches('"')
+            .trim();
+        if !value.is_empty() {
+            return Some(value.to_string());
+        }
+    }
+    None
+}
+
 fn main() {
     fastframe_i18n::build::compile_catalogs("assets/i18n");
+    // Bridge the fork's own version marker from the manifest into the
+    // build so `env!("MODIFIED_VERSION")` resolves. The manifest key
+    // alone is inert metadata to Cargo. Falls back to the package
+    // version so the build never breaks when the key is absent.
+    println!("cargo:rerun-if-changed=Cargo.toml");
+    let modified = modified_version()
+        .or_else(|| std::env::var("CARGO_PKG_VERSION").ok())
+        .unwrap_or_default();
+    println!("cargo:rustc-env=MODIFIED_VERSION={modified}");
     #[cfg(windows)]
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
         println!("cargo:rerun-if-changed=packaging/windows/spotifast.ico");
@@ -56,8 +101,15 @@ fn main() {
             println!("cargo:warning=Windows resources not embedded: {error}");
         }
         // Static libprojectM requires the GLEW library installed by vcpkg.
+        // Say so loudly when it cannot even be looked for: silently
+        // skipping ends later in an unresolved-symbol link error.
         if std::env::var_os("CARGO_FEATURE_MILKDROP").is_some() {
             println!("cargo:rerun-if-env-changed=VCPKG_INSTALLATION_ROOT");
+            if std::env::var_os("VCPKG_INSTALLATION_ROOT").is_none() {
+                println!(
+                    "cargo:warning=MilkDrop needs VCPKG_INSTALLATION_ROOT pointing at a vcpkg install with glew (see CONTRIBUTING.md); skipping GLEW will fail the link with unresolved glewInit"
+                );
+            }
             if let (Some(root), Some(triplet)) =
                 (std::env::var_os("VCPKG_INSTALLATION_ROOT"), vcpkg_triplet())
             {

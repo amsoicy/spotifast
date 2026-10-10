@@ -457,6 +457,8 @@ pub struct App {
     remote_recheck_at: Option<Instant>,
     pub seek_preview: Option<f32>,
     pub volume_preview: Option<f32>,
+    /// Focus the song list's filter box on the next draw.
+    pub filter_focus_requested: bool,
     /// Window geometry to restore on next attach, from the session file.
     session_window_size: Option<[f32; 2]>,
     /// The mode to return the window to when the app closed in
@@ -909,6 +911,7 @@ impl App {
             remote_recheck_at: None,
             seek_preview: None,
             volume_preview: None,
+            filter_focus_requested: false,
             session_window_size: session.window_size,
             session_lyrics_fullscreen_from: session.lyrics_fullscreen_from,
             session_window_pos: session.window_pos,
@@ -8975,6 +8978,9 @@ impl App {
                 if !matches!(self.page(), Page::Search) {
                     self.open(Page::Search);
                 }
+            }
+            Action::FocusFilter => {
+                self.filter_focus_requested = true;
             }
             Action::LoadMore(page) => self.load_more(page),
             Action::LoadWindow { page, position } => self.load_window(page, position),

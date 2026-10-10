@@ -365,16 +365,21 @@ pub fn actions_row(
                 });
         }
         if let Some(filter) = filter {
+            let filter_id = egui::Id::new(("collection-filter", actions.name));
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                widgets::search_field(
+                let response = widgets::search_field(
                     ui,
                     &palette,
                     locale,
-                    egui::Id::new(("collection-filter", actions.name)),
+                    filter_id,
                     filter,
                     &gettext(locale, "Filter"),
                     220.0,
                 );
+                if app.filter_focus_requested {
+                    app.filter_focus_requested = false;
+                    response.request_focus();
+                }
             });
         }
     });

@@ -43,7 +43,8 @@ You can rename it in Settings.
 - **Play buttons show progress.** The button spins until Spotify responds.
 - **Artist names are links.** Click a credited artist in the player bar to
   open their page, even while the rest of the song's details are loading.
-- **Common actions have shortcuts.** Space plays and pauses, Ctrl+F or `/`
+- **Common actions have shortcuts.** Space plays and pauses, Ctrl+F filters
+  the song list (or searches where there is none), Ctrl+Shift+F or `/`
   searches, and `Q` opens the queue. Ctrl+/ shows the full list.
 - **Right-click for more actions.** Right-click a song, playlist, album,
   artist, or podcast to see its menu. These menus are available in Home,

@@ -2049,6 +2049,61 @@ mod tests {
         app.backend.shutdown();
     }
 
+    /// The Playlists shelf lists everything by default; its dropdown
+    /// keeps only the account's own playlists under My playlists.
+    #[test]
+    fn playlist_scope_dropdown_filters_to_owned_playlists() {
+        fn library(app: &mut App, ui: &mut egui::Ui) {
+            crate::ui::sidebar::show(app, ui);
+        }
+        let (ctx, mut app) = accessible_app("playlist-scope");
+        view_frame(&ctx, &mut app, vec![], library);
+        let painted = view_frame(&ctx, &mut app, vec![], library);
+        let has = |painted: &[(String, egui::Rect)], wanted: &str| {
+            painted.iter().any(|(text, _)| text == wanted)
+        };
+        assert!(
+            has(&painted, "Discover Weekly"),
+            "all playlists to begin with"
+        );
+        assert!(has(&painted, "Late night focus"));
+        assert!(has(&painted, "Liked Songs"));
+        assert!(has(&painted, "All playlists"));
+        // Open the dropdown and pick My playlists.
+        let scope = painted
+            .iter()
+            .find(|(text, _)| text == "All playlists")
+            .map(|(_, rect)| rect.center())
+            .expect("the scope dropdown");
+        view_frame(
+            &ctx,
+            &mut app,
+            pointer_click(scope, egui::PointerButton::Primary),
+            library,
+        );
+        let painted = view_frame(&ctx, &mut app, vec![], library);
+        let mine = painted
+            .iter()
+            .find(|(text, _)| text == "My playlists")
+            .map(|(_, rect)| rect.center())
+            .expect("the scope choice");
+        view_frame(
+            &ctx,
+            &mut app,
+            pointer_click(mine, egui::PointerButton::Primary),
+            library,
+        );
+        let painted = view_frame(&ctx, &mut app, vec![], library);
+        assert!(has(&painted, "My playlists"), "the button names the choice");
+        assert!(has(&painted, "Late night focus"), "owned playlists stay");
+        assert!(has(&painted, "Liked Songs"), "Liked Songs stays");
+        assert!(
+            !has(&painted, "Discover Weekly"),
+            "Spotify's own lists drop out"
+        );
+        app.backend.shutdown();
+    }
+
     /// Home's podcast shelf uses the ordinary cards, leaves out audiobooks
     /// and shows no longer saved, and is not drawn at all when empty.
     #[test]
@@ -3050,6 +3105,22 @@ mod tests {
             )),
             "{:?}",
             app.actions
+        );
+        app.backend.shutdown();
+    }
+
+    /// The About card shows the fork's own version beside the upstream
+    /// one, read out of the manifest by build.rs. Update the literals
+    /// here when either version moves.
+    #[test]
+    fn the_about_card_shows_the_fork_version() {
+        let (ctx, mut app) = accessible_app("about-fork-version");
+        let texts = settings_text(&ctx, &mut app, "Rust");
+        assert!(
+            texts
+                .iter()
+                .any(|text| text == "Spotifast 0.12.0 (Mod: 0.0.1)"),
+            "{texts:?}"
         );
         app.backend.shutdown();
     }
@@ -4703,6 +4774,29 @@ mod tests {
         app.backend.shutdown();
     }
 
+    /// Focusing the song list's filter lands the caret in the playlist's
+    /// filter box.
+    #[test]
+    fn focusing_the_filter_lands_in_the_playlist_filter_box() {
+        fn playlist(app: &mut App, ui: &mut egui::Ui) {
+            crate::ui::collection::playlist(app, ui, "pl1");
+        }
+        let (ctx, mut app) = accessible_app("playlist-filter-focus");
+        app.apply(Action::FocusFilter, &ctx);
+        view_frame(&ctx, &mut app, vec![], playlist);
+        view_frame(&ctx, &mut app, vec![], playlist);
+        assert_eq!(
+            ctx.memory(|memory| memory.focused()),
+            Some(egui::Id::new(("collection-filter", "Late night focus"))),
+            "the playlist filter box takes focus"
+        );
+        assert!(
+            !app.filter_focus_requested,
+            "the request is spent, not sticky"
+        );
+        app.backend.shutdown();
+    }
+
     #[test]
     fn loading_collections_keep_their_hero_layout() {
         fn playlist(app: &mut App, ui: &mut egui::Ui) {
@@ -4943,7 +5037,7 @@ mod tests {
         let mut time = 100.0;
         let mut frame = |events: Vec<egui::Event>| {
             time += 0.05;
-            let _ = ctx.run_ui(
+            let mut output = ctx.run_ui(
                 egui::RawInput {
                     screen_rect: Some(egui::Rect::from_min_size(
                         egui::Pos2::ZERO,
@@ -4955,6 +5049,7 @@ mod tests {
                 },
                 |ui| artist(&mut app, ui),
             );
+            output.textures_delta.clear();
         };
         frame(first);
         frame(second);
